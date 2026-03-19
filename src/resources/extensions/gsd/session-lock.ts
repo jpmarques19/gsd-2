@@ -324,7 +324,17 @@ export function updateSessionLock(
  */
 export function validateSessionLock(basePath: string): boolean {
   // Lock was compromised by proper-lockfile (mtime drift from sleep, stall, etc.)
+  // Before giving up, attempt to re-acquire — the compromise may be a false
+  // positive caused by a transient mtime issue (event loop stall, filesystem
+  // hiccup) rather than an actual takeover by another process.
   if (_lockCompromised) {
+    const reacquireResult = acquireSessionLock(basePath);
+    if (reacquireResult.acquired) {
+      // Re-acquisition succeeded — no other process holds the lock.
+      // The compromise was a false positive; continue normally.
+      return true;
+    }
+    // Re-acquisition failed — another process truly holds the lock.
     return false;
   }
 
@@ -337,7 +347,14 @@ export function validateSessionLock(basePath: string): boolean {
   const lp = lockPath(basePath);
   const existing = readExistingLockData(lp);
   if (!existing) {
-    // Lock file was deleted — we lost ownership
+    // Lock file was deleted — we lost ownership.
+    // Attempt re-acquisition before giving up — the file may have been
+    // cleared by the doctor's stale_crash_lock check (which false-positives
+    // when the lock PID matches the current process).
+    const reacquireResult = acquireSessionLock(basePath);
+    if (reacquireResult.acquired) {
+      return true;
+    }
     return false;
   }
 
